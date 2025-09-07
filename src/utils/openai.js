@@ -11,12 +11,13 @@ export const analyzeAudioWithAI = async (audioBlob) => {
   }
 
   try {
-    // Convert audio blob to base64 or appropriate format
+    // Convert audio blob to appropriate format for Whisper
     const formData = new FormData()
     formData.append('file', audioBlob, 'audio.wav')
     formData.append('model', 'whisper-1')
+    formData.append('response_format', 'json')
 
-    // First, transcribe the audio
+    // First, transcribe the audio using Whisper
     const transcriptionResponse = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
       headers: {
@@ -25,9 +26,39 @@ export const analyzeAudioWithAI = async (audioBlob) => {
       body: formData
     })
 
+    if (!transcriptionResponse.ok) {
+      throw new Error(`Transcription failed: ${transcriptionResponse.statusText}`)
+    }
+
     const transcription = await transcriptionResponse.json()
 
-    // Then analyze the audio characteristics using GPT-4
+    // Enhanced prompt for better species identification
+    const analysisPrompt = `You are an expert ornithologist and bioacoustics specialist. Analyze this audio transcription and any acoustic patterns to identify the animal species and call characteristics.
+
+Audio transcription: "${transcription.text}"
+
+Please provide a detailed analysis in the following JSON format:
+{
+  "species": "Scientific or common name of the most likely species",
+  "callType": "Type of vocalization (e.g., Territory Call, Alarm Call, Contact Call, Mating Call, Song)",
+  "confidence": 0.85,
+  "insight": "Detailed behavioral explanation of what this vocalization likely means and the context in which it's used",
+  "alternativeSpecies": ["List of 2-3 other possible species if confidence is low"],
+  "acousticFeatures": "Description of key acoustic characteristics that led to this identification",
+  "timeOfDay": "Most likely time this call would occur",
+  "habitat": "Typical habitat where this species and call type would be found"
+}
+
+Base your analysis on:
+1. Acoustic patterns and frequency characteristics
+2. Call structure and rhythm
+3. Known behavioral contexts for different species
+4. Geographic and habitat considerations
+5. Seasonal patterns if relevant
+
+Provide specific, scientifically accurate information.`
+
+    // Analyze using GPT-4 for species identification
     const analysisResponse = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -39,29 +70,71 @@ export const analyzeAudioWithAI = async (audioBlob) => {
         messages: [
           {
             role: 'system',
-            content: `You are an expert ornithologist and animal sound analyst. Based on audio transcription and description, identify the most likely species, call type, and behavioral context. Return a JSON response with: species, callType, confidence (0-1), and insight (behavioral explanation).`
+            content: 'You are an expert ornithologist and bioacoustics specialist. Provide accurate, scientific analysis of animal vocalizations.'
           },
           {
             role: 'user',
-            content: `Analyze this audio transcription: "${transcription.text}". Provide species identification, call type classification, confidence score, and behavioral insight.`
+            content: analysisPrompt
           }
         ],
-        temperature: 0.3
+        temperature: 0.2,
+        max_tokens: 1000
       })
     })
+
+    if (!analysisResponse.ok) {
+      throw new Error(`Analysis failed: ${analysisResponse.statusText}`)
+    }
 
     const analysis = await analysisResponse.json()
     
     try {
-      return JSON.parse(analysis.choices[0].message.content)
+      const result = JSON.parse(analysis.choices[0].message.content)
+      
+      // Ensure required fields are present
+      return {
+        species: result.species || 'Unknown Species',
+        callType: result.callType || 'Unknown Call',
+        confidence: Math.min(1, Math.max(0, result.confidence || 0.5)),
+        insight: result.insight || 'Analysis unavailable',
+        alternativeSpecies: result.alternativeSpecies || [],
+        acousticFeatures: result.acousticFeatures || '',
+        timeOfDay: result.timeOfDay || '',
+        habitat: result.habitat || '',
+        transcription: transcription.text
+      }
     } catch (parseError) {
       console.error('Error parsing AI response:', parseError)
-      return mockAnalyzeAudio()
+      // Fallback to extracting information from raw text
+      return parseAnalysisFromText(analysis.choices[0].message.content, transcription.text)
     }
 
   } catch (error) {
     console.error('Error calling OpenAI API:', error)
     return mockAnalyzeAudio()
+  }
+}
+
+// Fallback parser for when JSON parsing fails
+const parseAnalysisFromText = (text, transcription) => {
+  // Extract species name (look for common patterns)
+  const speciesMatch = text.match(/species[:\s]+([A-Za-z\s]+)/i)
+  const species = speciesMatch ? speciesMatch[1].trim() : 'Unknown Species'
+  
+  // Extract call type
+  const callTypeMatch = text.match(/call[:\s]+([A-Za-z\s]+)/i)
+  const callType = callTypeMatch ? callTypeMatch[1].trim() : 'Unknown Call'
+  
+  // Extract confidence (look for numbers between 0 and 1)
+  const confidenceMatch = text.match(/confidence[:\s]+([0-9.]+)/i)
+  const confidence = confidenceMatch ? parseFloat(confidenceMatch[1]) : 0.5
+  
+  return {
+    species,
+    callType,
+    confidence: Math.min(1, Math.max(0, confidence)),
+    insight: text.substring(0, 200) + '...',
+    transcription
   }
 }
 

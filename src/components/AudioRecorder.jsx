@@ -88,21 +88,58 @@ const AudioRecorder = () => {
     
     setAnalyzing(true)
     
-    // Simulate AI analysis (in real app, this would call OpenAI API)
-    setTimeout(() => {
-      const mockResult = {
-        species: 'American Robin',
-        callType: 'Territory Call',
-        confidence: 0.87,
-        insight: 'This bird is marking its territory with a clear, melodious song. Robins typically use this call pattern to establish breeding territory and attract mates during spring.',
-        location: 'Urban Park',
+    try {
+      // Convert audio URL to blob for OpenAI API
+      const response = await fetch(audioURL)
+      const audioBlob = await response.blob()
+      
+      // Import the OpenAI analysis function
+      const { analyzeAudioWithAI } = await import('../utils/openai')
+      
+      // Call OpenAI API for real analysis
+      const analysisResult = await analyzeAudioWithAI(audioBlob)
+      
+      // Get user's location if available
+      let location = 'Unknown Location'
+      if (navigator.geolocation) {
+        try {
+          const position = await new Promise((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 })
+          })
+          location = `${position.coords.latitude.toFixed(4)}, ${position.coords.longitude.toFixed(4)}`
+        } catch (error) {
+          console.log('Location access denied or unavailable')
+        }
+      }
+      
+      const result = {
+        ...analysisResult,
+        location,
         timestamp: new Date().toISOString(),
-        audioUrl: audioURL
+        audioUrl: audioURL,
+        recordingDuration: recordingTime
+      }
+      
+      setIdentification(result)
+    } catch (error) {
+      console.error('Error analyzing audio:', error)
+      
+      // Fallback to mock data if API fails
+      const mockResult = {
+        species: 'Analysis Failed',
+        callType: 'Unknown',
+        confidence: 0.0,
+        insight: 'Unable to analyze audio. Please check your internet connection and API configuration.',
+        location: 'Unknown Location',
+        timestamp: new Date().toISOString(),
+        audioUrl: audioURL,
+        error: true
       }
       
       setIdentification(mockResult)
+    } finally {
       setAnalyzing(false)
-    }, 3000)
+    }
   }
 
   const saveRecording = () => {
